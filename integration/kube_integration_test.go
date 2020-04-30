@@ -35,7 +35,6 @@ import (
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib"
-	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/auth/testauthority"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
@@ -43,6 +42,7 @@ import (
 	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/session"
+	"github.com/gravitational/teleport/lib/tlsca"
 	"github.com/gravitational/teleport/lib/utils"
 
 	"github.com/gravitational/trace"
@@ -151,10 +151,11 @@ func (s *KubeSuite) TestKubeExec(c *check.C) {
 	})
 
 	username := s.me.Username
+	kubeGroups := []string{teleport.KubeSystemMasters}
 	role, err := services.NewRole("kubemaster", services.RoleSpecV3{
 		Allow: services.RoleConditions{
 			Logins:     []string{username},
-			KubeGroups: []string{teleport.KubeSystemMasters},
+			KubeGroups: kubeGroups,
 			KubeUsers:  []string{"alice@example.com"},
 		},
 	})
@@ -173,6 +174,7 @@ func (s *KubeSuite) TestKubeExec(c *check.C) {
 	impersonatingProxyClient, impersonatingProxyClientConfig, err := kubeProxyClient(kubeProxyConfig{
 		t:             t,
 		username:      username,
+		kubeGroups:    kubeGroups,
 		impersonation: &rest.ImpersonationConfig{UserName: "bob", Groups: []string{"system: masters"}},
 	})
 	c.Assert(err, check.IsNil)
@@ -186,8 +188,9 @@ func (s *KubeSuite) TestKubeExec(c *check.C) {
 	// scoped client requests will be allowed, as long as the impersonation headers
 	// are referencing users and groups allowed by existing roles
 	scopedProxyClient, scopedProxyClientConfig, err := kubeProxyClient(kubeProxyConfig{
-		t:        t,
-		username: username,
+		t:          t,
+		username:   username,
+		kubeGroups: kubeGroups,
 		impersonation: &rest.ImpersonationConfig{
 			UserName: role.GetKubeUsers(services.Allow)[0],
 			Groups:   role.GetKubeGroups(services.Allow),
@@ -201,7 +204,11 @@ func (s *KubeSuite) TestKubeExec(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// set up kube configuration using proxy
-	proxyClient, proxyClientConfig, err := kubeProxyClient(kubeProxyConfig{t: t, username: username})
+	proxyClient, proxyClientConfig, err := kubeProxyClient(kubeProxyConfig{
+		t:          t,
+		username:   username,
+		kubeGroups: kubeGroups,
+	})
 	c.Assert(err, check.IsNil)
 
 	// try get request to fetch available pods
@@ -319,14 +326,15 @@ func (s *KubeSuite) TestKubeDeny(c *check.C) {
 	})
 
 	username := s.me.Username
+	kubeGroups := []string{teleport.KubeSystemMasters}
 	role, err := services.NewRole("kubemaster", services.RoleSpecV3{
 		Allow: services.RoleConditions{
 			Logins:     []string{username},
-			KubeGroups: []string{teleport.KubeSystemMasters},
+			KubeGroups: kubeGroups,
 			KubeUsers:  []string{"alice@example.com"},
 		},
 		Deny: services.RoleConditions{
-			KubeGroups: []string{teleport.KubeSystemMasters},
+			KubeGroups: kubeGroups,
 			KubeUsers:  []string{"alice@example.com"},
 		},
 	})
@@ -341,7 +349,11 @@ func (s *KubeSuite) TestKubeDeny(c *check.C) {
 	defer t.StopAll()
 
 	// set up kube configuration using proxy
-	proxyClient, _, err := kubeProxyClient(kubeProxyConfig{t: t, username: username})
+	proxyClient, _, err := kubeProxyClient(kubeProxyConfig{
+		t:          t,
+		username:   username,
+		kubeGroups: kubeGroups,
+	})
 	c.Assert(err, check.IsNil)
 
 	// try get request to fetch available pods
@@ -365,10 +377,11 @@ func (s *KubeSuite) TestKubePortForward(c *check.C) {
 	})
 
 	username := s.me.Username
+	kubeGroups := []string{teleport.KubeSystemMasters}
 	role, err := services.NewRole("kubemaster", services.RoleSpecV3{
 		Allow: services.RoleConditions{
 			Logins:     []string{username},
-			KubeGroups: []string{teleport.KubeSystemMasters},
+			KubeGroups: kubeGroups,
 		},
 	})
 	c.Assert(err, check.IsNil)
@@ -382,7 +395,11 @@ func (s *KubeSuite) TestKubePortForward(c *check.C) {
 	defer t.StopAll()
 
 	// set up kube configuration using proxy
-	_, proxyClientConfig, err := kubeProxyClient(kubeProxyConfig{t: t, username: username})
+	_, proxyClientConfig, err := kubeProxyClient(kubeProxyConfig{
+		t:          t,
+		username:   username,
+		kubeGroups: kubeGroups,
+	})
 	c.Assert(err, check.IsNil)
 
 	// pick the first kube-dns pod and run port forwarding on it
@@ -431,6 +448,7 @@ func (s *KubeSuite) TestKubePortForward(c *check.C) {
 	_, impersonatingProxyClientConfig, err := kubeProxyClient(kubeProxyConfig{
 		t:             t,
 		username:      username,
+		kubeGroups:    kubeGroups,
 		impersonation: &rest.ImpersonationConfig{UserName: "bob", Groups: []string{"system: masters"}},
 	})
 	c.Assert(err, check.IsNil)
@@ -466,10 +484,11 @@ func (s *KubeSuite) TestKubeTrustedClustersClientCert(c *check.C) {
 
 	// main cluster has a role and user called main-kube
 	username := s.me.Username
+	kubeGroups := []string{teleport.KubeSystemMasters}
 	mainRole, err := services.NewRole("main-kube", services.RoleSpecV3{
 		Allow: services.RoleConditions{
 			Logins:     []string{username},
-			KubeGroups: []string{teleport.KubeSystemMasters},
+			KubeGroups: kubeGroups,
 		},
 	})
 	c.Assert(err, check.IsNil)
@@ -561,6 +580,7 @@ func (s *KubeSuite) TestKubeTrustedClustersClientCert(c *check.C) {
 	impersonatingProxyClient, impersonatingProxyClientConfig, err := kubeProxyClient(kubeProxyConfig{
 		t:              main,
 		username:       username,
+		kubeGroups:     kubeGroups,
 		impersonation:  &rest.ImpersonationConfig{UserName: "bob", Groups: []string{"system: masters"}},
 		routeToCluster: clusterAux,
 	})
@@ -576,6 +596,7 @@ func (s *KubeSuite) TestKubeTrustedClustersClientCert(c *check.C) {
 	proxyClient, proxyClientConfig, err := kubeProxyClient(kubeProxyConfig{
 		t:              main,
 		username:       username,
+		kubeGroups:     kubeGroups,
 		routeToCluster: clusterAux,
 	})
 	c.Assert(err, check.IsNil)
@@ -730,10 +751,11 @@ func (s *KubeSuite) TestKubeTrustedClustersSNI(c *check.C) {
 
 	// main cluster has a role and user called main-kube
 	username := s.me.Username
+	kubeGroups := []string{teleport.KubeSystemMasters}
 	mainRole, err := services.NewRole("main-kube", services.RoleSpecV3{
 		Allow: services.RoleConditions{
 			Logins:     []string{username},
-			KubeGroups: []string{teleport.KubeSystemMasters},
+			KubeGroups: kubeGroups,
 		},
 	})
 	c.Assert(err, check.IsNil)
@@ -829,6 +851,7 @@ func (s *KubeSuite) TestKubeTrustedClustersSNI(c *check.C) {
 	impersonatingProxyClient, impersonatingProxyClientConfig, err := kubeProxyClient(kubeProxyConfig{
 		t:             main,
 		username:      username,
+		kubeGroups:    kubeGroups,
 		impersonation: &rest.ImpersonationConfig{UserName: "bob", Groups: []string{"system: masters"}},
 	})
 	c.Assert(err, check.IsNil)
@@ -840,7 +863,11 @@ func (s *KubeSuite) TestKubeTrustedClustersSNI(c *check.C) {
 	c.Assert(err, check.NotNil)
 
 	// set up kube configuration using main proxy
-	proxyClient, proxyClientConfig, err := kubeProxyClient(kubeProxyConfig{t: main, username: username})
+	proxyClient, proxyClientConfig, err := kubeProxyClient(kubeProxyConfig{
+		t:          main,
+		username:   username,
+		kubeGroups: kubeGroups,
+	})
 	c.Assert(err, check.IsNil)
 
 	// try get request to fetch available pods
@@ -1013,11 +1040,12 @@ func (s *KubeSuite) runKubeDisconnectTest(c *check.C, tc disconnectTestCase) {
 	})
 
 	username := s.me.Username
+	kubeGroups := []string{teleport.KubeSystemMasters}
 	role, err := services.NewRole("kubemaster", services.RoleSpecV3{
 		Options: tc.options,
 		Allow: services.RoleConditions{
 			Logins:     []string{username},
-			KubeGroups: []string{teleport.KubeSystemMasters},
+			KubeGroups: kubeGroups,
 		},
 	})
 	c.Assert(err, check.IsNil)
@@ -1031,7 +1059,11 @@ func (s *KubeSuite) runKubeDisconnectTest(c *check.C, tc disconnectTestCase) {
 	defer t.StopAll()
 
 	// set up kube configuration using proxy
-	proxyClient, proxyClientConfig, err := kubeProxyClient(kubeProxyConfig{t: t, username: username})
+	proxyClient, proxyClientConfig, err := kubeProxyClient(kubeProxyConfig{
+		t:          t,
+		username:   username,
+		kubeGroups: kubeGroups,
+	})
 	c.Assert(err, check.IsNil)
 
 	// try get request to fetch available pods
@@ -1126,6 +1158,7 @@ func tlsClientConfig(cfg *rest.Config) (*tls.Config, error) {
 type kubeProxyConfig struct {
 	t              *TeleInstance
 	username       string
+	kubeGroups     []string
 	impersonation  *rest.ImpersonationConfig
 	routeToCluster string
 }
@@ -1146,19 +1179,37 @@ func kubeProxyClient(cfg kubeProxyConfig) (*kubernetes.Clientset, *rest.Config, 
 		return nil, nil, trace.Wrap(err)
 	}
 
-	cert, key, err := auth.GenerateCertificate(authServer,
-		auth.TestIdentity{
-			I:              auth.LocalUser{Username: cfg.username},
-			RouteToCluster: cfg.routeToCluster,
-		})
+	tlsCA, err := ca.TLSCA()
 	if err != nil {
 		return nil, nil, trace.Wrap(err)
 	}
+	privPEM, _, err := authServer.GenerateKeyPair("")
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	priv, err := tlsca.ParsePrivateKeyPEM(privPEM)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	id := tlsca.Identity{
+		Username:         cfg.username,
+		KubernetesGroups: cfg.kubeGroups,
+	}
+	subj, err := id.Subject()
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	cert, err := tlsCA.GenerateCertificate(tlsca.CertificateRequest{
+		Clock:     authServer.GetClock(),
+		PublicKey: priv.Public(),
+		Subject:   subj,
+		NotAfter:  authServer.GetClock().Now().Add(10 * time.Minute),
+	})
 
 	tlsClientConfig := rest.TLSClientConfig{
 		CAData:   ca.GetTLSKeyPairs()[0].Cert,
 		CertData: cert,
-		KeyData:  key,
+		KeyData:  privPEM,
 	}
 	config := &rest.Config{
 		Host:            "https://" + cfg.t.Config.Proxy.Kube.ListenAddr.Addr,
